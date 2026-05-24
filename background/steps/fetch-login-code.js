@@ -93,6 +93,7 @@
     }
 
     function getAuthLoginStepForVisibleStep(visibleStep) {
+      if (Number(visibleStep) === 3) return 2;
       return visibleStep >= 11 ? 10 : 7;
     }
 

@@ -282,6 +282,14 @@
               url: authUrl,
             };
           }
+          if (isLikelyLoggedInChatgptHomeUrl(authUrl)) {
+            return {
+              success: true,
+              reason: 'chatgpt_home',
+              addPhonePage: false,
+              url: authUrl,
+            };
+          }
           if (authState === 'add_phone_page' || authState === 'phone_verification_page') {
             return {
               success: true,
@@ -383,6 +391,13 @@
     function getCompletionStep(step, options = {}) {
       const completionStep = Number(options.completionStep);
       return Number.isFinite(completionStep) && completionStep > 0 ? completionStep : step;
+    }
+
+    function getAuthLoginStepForCompletionStep(completionStep) {
+      if (Number(completionStep) === 3) {
+        return 2;
+      }
+      return completionStep >= 11 ? 10 : 7;
     }
 
     async function confirmCustomVerificationStepBypass(step, options = {}) {
@@ -1101,7 +1116,7 @@
 
     async function submitVerificationCode(step, code, options = {}) {
       const completionStep = getCompletionStep(step, options);
-      const authLoginStep = completionStep >= 11 ? 10 : 7;
+      const authLoginStep = getAuthLoginStepForCompletionStep(completionStep);
       const signupTabId = await getTabId('signup-page');
       if (!signupTabId) {
         throw new Error('认证页面标签页已关闭，无法填写验证码。');
@@ -1172,6 +1187,11 @@
                   step: completionStep,
                   stepKey: 'fetch-login-code',
                 });
+              } else if (fallback.reason === 'chatgpt_home') {
+                await addLog('验证码提交后通信中断，但页面已进入 ChatGPT 已登录首页，按提交成功继续。', 'warn', {
+                  step: completionStep,
+                  stepKey: 'fetch-login-code',
+                });
               } else {
                 await addLog('验证码提交后通信中断，但页面已进入 OAuth 授权页，按提交成功继续。', 'warn', {
                   step: completionStep,
@@ -1219,6 +1239,11 @@
             if (fallback.success) {
               if (fallback.addPhonePage) {
                 await addLog('验证码提交后通信中断，但页面已进入手机号验证页，按提交成功继续。', 'warn', {
+                  step: completionStep,
+                  stepKey: 'fetch-login-code',
+                });
+              } else if (fallback.reason === 'chatgpt_home') {
+                await addLog('验证码提交后通信中断，但页面已进入 ChatGPT 已登录首页，按提交成功继续。', 'warn', {
                   step: completionStep,
                   stepKey: 'fetch-login-code',
                 });

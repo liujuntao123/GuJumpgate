@@ -25,6 +25,7 @@
       startOAuthFlowTimeoutWindow,
       STEP6_MAX_ATTEMPTS,
       throwIfStopped,
+      DIRECT_CHATGPT_LOGIN_URL = 'https://chatgpt.com/',
     } = deps;
 
     function isManagementSecretConfigError(error) {
@@ -222,6 +223,15 @@
       return visibleStep > 0 ? visibleStep : 7;
     }
 
+    function isDirectChatGptLoginStep(state = {}) {
+      return Boolean(
+        state?.directChatGptLogin
+        || state?.stepDefinition?.ui?.directChatGptLogin
+        || state?.nodeDefinition?.ui?.directChatGptLogin
+        || state?.currentNodeDefinition?.ui?.directChatGptLogin
+      );
+    }
+
     async function completeStep7PostLoginPhoneHandoff(state = {}, err, completionStep) {
       if (normalizeStep7SignupMethod(state?.resolvedSignupMethod || state?.signupMethod) === 'phone') {
         throw new Error(
@@ -312,8 +322,11 @@
           const accountIdentifier = currentIdentifierType === 'phone'
             ? currentPhoneNumber
             : currentEmail;
-          const oauthUrl = await refreshOAuthUrlBeforeStep6(currentState);
-          if (typeof startOAuthFlowTimeoutWindow === 'function') {
+          const directChatGptLogin = isDirectChatGptLoginStep(currentState);
+          const oauthUrl = directChatGptLogin
+            ? DIRECT_CHATGPT_LOGIN_URL
+            : await refreshOAuthUrlBeforeStep6(currentState);
+          if (!directChatGptLogin && typeof startOAuthFlowTimeoutWindow === 'function') {
             await startOAuthFlowTimeoutWindow({ step: completionStep, oauthUrl });
           }
           const loginTimeoutMs = typeof getOAuthFlowStepTimeoutMs === 'function'
@@ -325,7 +338,7 @@
             : 180000;
 
           if (attempt === 1) {
-            await addLog('正在打开最新 OAuth 链接并登录...', 'info', {
+            await addLog(directChatGptLogin ? '正在打开 ChatGPT 官网并登录...' : '正在打开最新 OAuth 链接并登录...', 'info', {
               step: completionStep,
               stepKey: 'oauth-login',
             });

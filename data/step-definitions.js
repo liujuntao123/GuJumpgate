@@ -67,6 +67,12 @@
     { id: 6, order: 60, key: 'plus-checkout-create', title: '创建 GPC 订单', sourceId: 'plus-checkout', driverId: 'content/plus-checkout', command: 'plus-checkout-create' },
     { id: 7, order: 70, key: 'plus-checkout-billing', title: '等待 GPC 任务完成', sourceId: 'plus-checkout', driverId: 'content/plus-checkout', command: 'plus-checkout-billing' },
   ];
+  const SUB2API_SESSION_LOGIN_STEP_DEFINITIONS = [
+    { id: 1, order: 10, key: 'open-chatgpt', title: '打开 ChatGPT 官网', sourceId: 'chatgpt', driverId: null, command: 'open-chatgpt' },
+    { id: 2, order: 20, key: 'oauth-login', title: '登录并输入邮箱', sourceId: 'openai-auth', driverId: 'content/signup-page', command: 'oauth-login', ui: { directChatGptLogin: true } },
+    { id: 3, order: 30, key: 'fetch-login-code', title: '获取登录验证码', sourceId: 'openai-auth', driverId: 'content/signup-page', command: 'submit-verification-code', mailRuleId: 'openai-login-code' },
+    { id: 4, order: 40, key: 'sub2api-session-import', title: '导入当前 ChatGPT 会话到 SUB2API', sourceId: 'sub2api-panel', driverId: 'background/sub2api-session-import', command: 'sub2api-session-import' },
+  ];
 
   function isPhoneSignupReloginAfterBindEmailEnabled(options = {}) {
     return Boolean(options?.phoneSignupReloginAfterBindEmailEnabled);
@@ -345,6 +351,14 @@
     const signupMethod = getResolvedSignupMethod(options);
     const reloginAfterBindEmail = signupMethod === SIGNUP_METHOD_PHONE
       && isPhoneSignupReloginAfterBindEmailEnabled(options);
+    const plusAccountAccessStrategy = normalizePlusAccountAccessStrategy(options?.plusAccountAccessStrategy);
+    if (
+      panelMode === 'sub2api'
+      && signupMethod === SIGNUP_METHOD_EMAIL
+      && plusAccountAccessStrategy === PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION
+    ) {
+      return SUB2API_SESSION_LOGIN_STEP_DEFINITIONS;
+    }
     if (panelMode === LOCAL_CPA_JSON_NO_RT_PANEL_MODE) {
       return [
         ...PLUS_PAYPAL_HOSTED_CHECKOUT_PREFIX_STEP_DEFINITIONS,
@@ -360,7 +374,6 @@
       return NORMAL_STEP_DEFINITIONS;
     }
     const paymentMethod = normalizePlusPaymentMethod(options?.plusPaymentMethod || options?.paymentMethod);
-    const plusAccountAccessStrategy = normalizePlusAccountAccessStrategy(options?.plusAccountAccessStrategy);
     if (paymentMethod === PLUS_PAYMENT_METHOD_GPC_HELPER) {
       if (signupMethod === SIGNUP_METHOD_PHONE) {
         return reloginAfterBindEmail
@@ -473,6 +486,7 @@
           ...PLUS_GPC_CPA_SESSION_STEP_DEFINITIONS,
           ...PLUS_GPC_PHONE_STEP_DEFINITIONS,
           ...PLUS_GPC_PHONE_BOUND_EMAIL_RELOGIN_STEP_DEFINITIONS,
+          ...SUB2API_SESSION_LOGIN_STEP_DEFINITIONS,
         ]) {
           keyed.set(`${step.id}:${step.key}`, step);
         }

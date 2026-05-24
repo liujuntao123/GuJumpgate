@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GuJumpgate  V0.1.4</title>
+  <title>GuJumpgate Login SUB2API  V0.1.4</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link
@@ -25,7 +25,7 @@
       <div class="header-version-block">
         <div class="header-version-main">
           <button id="extension-update-status" class="header-version-title header-version-link" type="button"
-          aria-label="打开 GitHub Releases 页面" title="打开 GitHub Releases 页面">GuJumpgate  V0.1.4</button>
+          aria-label="打开 GitHub Releases 页面" title="打开 GitHub Releases 页面">GuJumpgate Login SUB2API  V0.1.4</button>
           <button id="btn-release-log" class="header-link-btn" type="button" hidden>更新日志</button>
         </div>
         <span id="extension-version-meta" class="header-version-meta" hidden></span>
@@ -111,7 +111,7 @@
   <section id="data-section">
     <div id="settings-card" class="data-card">
       <div class="data-row">
-        <span class="data-label">注册</span>
+        <span class="data-label" id="label-flow-mode">注册</span>
         <select id="select-flow" class="data-select" aria-label="Flow 选择">
           <option value="codex" selected>codex</option>
         </select>
@@ -560,7 +560,7 @@
       <div class="data-row data-check-row" id="row-custom-mail-provider-pool" style="display:none;">
         <span class="data-label">自定义号池</span>
         <textarea id="input-custom-mail-provider-pool" class="data-textarea"
-          placeholder="每行一个注册邮箱，例如&#10;alias001@example.com&#10;alias002@example.com"></textarea>
+          placeholder="每行一个邮箱，例如&#10;alias001@example.com&#10;alias002@example.com"></textarea>
       </div>
       <div class="data-row" id="row-mail-2925-mode" style="display:none;">
         <span class="data-label">2925 模式</span>
@@ -602,7 +602,7 @@
             <button id="btn-custom-email-pool-import" class="btn btn-primary btn-sm" type="button">导入邮箱</button>
           </div>
           <div class="icloud-card">
-            <div id="custom-email-pool-summary" class="icloud-summary">导入你提前准备好的注册邮箱，每行一个邮箱地址。</div>
+            <div id="custom-email-pool-summary" class="icloud-summary">导入你提前准备好的邮箱，每行一个邮箱地址。</div>
             <div class="icloud-toolbar">
               <input id="input-custom-email-pool-search" class="data-input icloud-search" type="text"
                 placeholder="搜索邮箱 / 备注" />
@@ -681,7 +681,7 @@
         <input type="text" id="input-inbucket-mailbox" class="data-input" placeholder="例如 zju2001" />
       </div>
       <div class="data-row" id="row-auto-run-controls">
-        <span class="data-label">注册邮箱</span>
+        <span class="data-label" id="label-runtime-email">注册邮箱</span>
         <div class="data-inline">
           <input type="text" id="input-email" class="data-input" placeholder="由 微软邮箱账户池 自动分配" />
           <button id="btn-fetch-email" class="btn btn-outline btn-sm data-inline-btn" type="button">获取</button>

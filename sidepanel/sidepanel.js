@@ -49,6 +49,8 @@ const displayOauthUrl = document.getElementById('display-oauth-url');
 const displayLocalhostUrl = document.getElementById('display-localhost-url');
 const displayStatus = document.getElementById('display-status');
 const statusBar = document.getElementById('status-bar');
+const labelFlowMode = document.getElementById('label-flow-mode');
+const labelRuntimeEmail = document.getElementById('label-runtime-email');
 const inputEmail = document.getElementById('input-email');
 const inputSignupPhone = document.getElementById('input-signup-phone');
 const inputPassword = document.getElementById('input-password');
@@ -840,6 +842,14 @@ const CLOUDFLARE_TEMP_EMAIL_REGISTRATION_LOOKUP_PROMPT_DISMISSED_STORAGE_KEY = '
 const CPA_PHONE_SIGNUP_WARNING_MESSAGE = 'CPA 未适配手机号注册模式，认证成功后无法使用。请使用 SUB2API，或者认证成功后重新登录一遍进行解决。';
 const PHONE_VERIFICATION_SECTION_EXPANDED_STORAGE_KEY = 'multipage-phone-verification-section-expanded';
 let phoneVerificationSectionExpanded = false;
+
+function getAuthEmailNoun(state = latestState) {
+  return isSub2ApiSessionLoginMode(state) ? '登录邮箱' : '注册邮箱';
+}
+
+function getAuthVerificationLabel(step) {
+  return step === 4 && !isSub2ApiSessionLoginMode() ? '注册验证码' : '登录验证码';
+}
 
 function readPhoneVerificationSectionExpanded() {
   try {
@@ -2312,7 +2322,7 @@ async function confirmCloudflareTempEmailRegistrationLookupIfNeeded() {
   }
 
   const result = await openConfirmModalWithOption({
-    title: '注册邮箱查信',
+    title: `${getAuthEmailNoun()}查信`,
     messageHtml: buildCloudflareTempEmailRegistrationLookupPromptHtml(),
     confirmLabel: '我已知晓',
     optionLabel: '不再提醒',
@@ -3425,9 +3435,10 @@ function syncScheduledCountdownTicker() {
 }
 
 function setDefaultAutoRunButton() {
+  const loginMode = isSub2ApiSessionLoginMode();
   btnAutoRun.disabled = false;
   inputRunCount.disabled = shouldLockRunCountToEmailPool();
-  btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> 自动';
+  btnAutoRun.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> ${loginMode ? '导入' : '自动'}`;
 }
 
 function normalizeCloudflareDomainValue(value = '') {
@@ -8394,6 +8405,60 @@ function getSelectedSignupMethod() {
   return normalizeSignupMethod(activeButton?.dataset.signupMethod || latestState?.signupMethod || DEFAULT_SIGNUP_METHOD);
 }
 
+function isSub2ApiSessionLoginMode(state = latestState, options = {}) {
+  const panelMode = normalizePanelMode(
+    options.panelMode
+    || state?.panelMode
+    || (typeof selectPanelMode !== 'undefined' && selectPanelMode ? selectPanelMode.value : '')
+    || DEFAULT_PANEL_MODE
+  );
+  const strategy = normalizePlusAccountAccessStrategy(
+    options.plusAccountAccessStrategy
+    || state?.plusAccountAccessStrategy
+    || (typeof getSelectedExportSettings === 'function'
+      ? getSelectedExportSettings().plusAccountAccessStrategy
+      : '')
+  );
+  const signupMethod = normalizeSignupMethod(options.signupMethod || state?.signupMethod || DEFAULT_SIGNUP_METHOD);
+  return panelMode === 'sub2api'
+    && strategy === PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION
+    && signupMethod === SIGNUP_METHOD_EMAIL;
+}
+
+function updateLoginSessionCopy(state = latestState) {
+  const loginMode = isSub2ApiSessionLoginMode(state);
+  if (labelFlowMode) {
+    labelFlowMode.textContent = loginMode ? '登录' : '注册';
+  }
+  if (labelRuntimeEmail) {
+    labelRuntimeEmail.textContent = loginMode ? '登录邮箱' : '注册邮箱';
+  }
+  if (autoStartTitle) {
+    autoStartTitle.textContent = loginMode ? '启动登录导入' : '启动自动';
+  }
+  if (inputCustomMailProviderPool) {
+    inputCustomMailProviderPool.placeholder = loginMode
+      ? '每行一个登录邮箱，例如\nalias001@example.com\nalias002@example.com'
+      : '每行一个邮箱，例如\nalias001@example.com\nalias002@example.com';
+  }
+  if (inputCustomEmailPoolImport) {
+    inputCustomEmailPoolImport.placeholder = loginMode
+      ? '每行一个登录邮箱，例如\nalias001@gmail.com\nalias002@gmail.com'
+      : '每行一个邮箱，例如\nalias001@gmail.com\nalias002@gmail.com';
+  }
+  if (customEmailPoolSummary && !customEmailPoolSummary.dataset.dynamicSummaryLocked) {
+    customEmailPoolSummary.textContent = loginMode
+      ? '导入你提前准备好的登录邮箱，每行一个邮箱地址。'
+      : '导入你提前准备好的邮箱，每行一个邮箱地址。';
+  }
+  tempEmailLookupModeButtons.forEach((button) => {
+    if (button?.dataset?.tempEmailLookupMode === CLOUDFLARE_TEMP_EMAIL_LOOKUP_MODE_REGISTRATION_EMAIL) {
+      button.textContent = loginMode ? '登录邮箱' : '注册邮箱';
+    }
+  });
+  document.body?.classList?.toggle?.('is-sub2api-session-login-mode', loginMode);
+}
+
 function setSignupMethod(method) {
   const resolvedMethod = normalizeSignupMethod(method);
   signupMethodButtons.forEach((button) => {
@@ -8457,7 +8522,8 @@ function updateSignupMethodUI(options = {}) {
     return;
   }
 
-  const showSignupMethod = Boolean(inputPhoneVerificationEnabled?.checked);
+  const showSignupMethod = Boolean(inputPhoneVerificationEnabled?.checked)
+    && !isSub2ApiSessionLoginMode();
   if (rowSignupMethod) {
     rowSignupMethod.style.display = showSignupMethod ? '' : 'none';
   }
@@ -9686,6 +9752,7 @@ function initializeManualStepActions() {
 
 function renderStepsList() {
   if (!stepsList) return;
+  updateLoginSessionCopy();
 
   stepsList.innerHTML = workflowNodes.map((node) => {
     const step = getStepIdByNodeIdForCurrentMode(node.nodeId);
@@ -9751,6 +9818,17 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
   const currentlyUsingNoRtWorkflow = (typeof workflowNodes !== 'undefined' ? workflowNodes : [])
     .some((node) => String(node?.nodeId || '').trim() === 'local-cpa-json-export');
   const noRtWorkflowModeChanged = useNoRtWorkflow !== currentlyUsingNoRtWorkflow;
+  const sub2ApiSessionStrategy = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION === 'string'
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION
+    : 'sub2api_codex_session';
+  const useSub2ApiSessionLoginWorkflow = nextPanelMode === 'sub2api'
+    && nextAccountAccessStrategy === sub2ApiSessionStrategy
+    && nextSignupMethod === SIGNUP_METHOD_EMAIL;
+  const currentlyUsingSub2ApiSessionLoginWorkflow = (typeof workflowNodes !== 'undefined' ? workflowNodes : [])
+    .some((node) => String(node?.nodeId || '').trim() === 'sub2api-session-import')
+    && !(typeof workflowNodes !== 'undefined' ? workflowNodes : [])
+      .some((node) => String(node?.nodeId || '').trim() === 'plus-checkout-create');
+  const sub2ApiSessionLoginWorkflowChanged = useSub2ApiSessionLoginWorkflow !== currentlyUsingSub2ApiSessionLoginWorkflow;
   const nextActiveFlowId = String(
     options.activeFlowId
     || (typeof latestState !== 'undefined' ? latestState?.activeFlowId : '')
@@ -9773,6 +9851,7 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
     || nextSignupMethod !== currentSignupMethod
     || nextPhoneSignupReloginAfterBindEmailEnabled !== currentPhoneSignupReloginAfterBindEmailEnabled
     || noRtWorkflowModeChanged
+    || sub2ApiSessionLoginWorkflowChanged
     || paymentTitleChanged;
   if (!shouldRender) {
     return;
@@ -9780,7 +9859,7 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
 
   rebuildStepDefinitionState(nextPlusModeEnabled, {
     activeFlowId: nextActiveFlowId,
-    ...(useNoRtWorkflow ? { panelMode: nextPanelMode } : {}),
+    ...(nextPanelMode ? { panelMode: nextPanelMode } : {}),
     plusPaymentMethod: nextPaymentMethod,
     plusAccountAccessStrategy: nextAccountAccessStrategy,
     signupMethod: nextSignupMethod,
@@ -9863,6 +9942,7 @@ function applySettingsState(state) {
     applyOperationDelayState(state);
   }
   syncAutoRunState(state);
+  updateLoginSessionCopy(state);
   renderStepStatuses(latestState);
 
   inputEmail.value = state?.email || '';
@@ -11044,15 +11124,15 @@ function getCustomMailProviderUiCopy() {
   }
   return {
     buttonLabel: '自定义邮箱',
-    placeholder: '请填写本轮要使用的注册邮箱',
+    placeholder: isSub2ApiSessionLoginMode() ? '请填写本轮要登录的邮箱' : '请填写本轮要使用的注册邮箱',
     successVerb: '使用',
     label: '自定义邮箱',
   };
 }
 
 function getCustomVerificationPromptCopy(step) {
-  const verificationLabel = step === 4 ? '注册验证码' : '登录验证码';
-  const isLoginVerificationStep = step === 8 || step === 11;
+  const verificationLabel = getAuthVerificationLabel(step);
+  const isLoginVerificationStep = verificationLabel === '登录验证码';
   return {
     title: `手动处理${verificationLabel}`,
     message: `当前邮箱服务为“自定义邮箱”。请先在页面中手动输入${verificationLabel}，并确认已经进入下一页面后，再点击确认。`,
@@ -11656,7 +11736,7 @@ function updateMailProviderUI() {
         ? '步骤 3 会自动购买 LuckMail 邮箱并用于收码'
         : (useGeneratedAlias
           ? '步骤 3 会自动生成邮箱，无需手动获取'
-          : (useCustomEmail ? '请先填写自定义注册邮箱，成功一轮后会自动清空' : `先自动获取${uiCopy.label}，或手动粘贴邮箱后再继续`)));
+          : (useCustomEmail ? `请先填写自定义${getAuthEmailNoun()}，成功一轮后会自动清空` : `先自动获取${uiCopy.label}，或手动粘贴邮箱后再继续`)));
   }
   if (autoHintText && useCustomEmailPool) {
     autoHintText.textContent = getCustomEmailPoolSize() > 0
@@ -11664,7 +11744,9 @@ function updateMailProviderUI() {
       : '请先在邮箱池里每行填写一个邮箱，自动轮数会跟随数量';
   }
   if (autoHintText && useCustomEmail && useCustomMailProviderPool) {
-    autoHintText.textContent = `当前自定义号池共 ${getCustomMailProviderPoolSize()} 个邮箱，自动轮数会跟随数量；第 4/8 步仍需手动输入验证码`;
+    autoHintText.textContent = isSub2ApiSessionLoginMode()
+      ? `当前自定义号池共 ${getCustomMailProviderPoolSize()} 个邮箱，自动轮数会跟随数量；第 3 步仍需手动输入验证码`
+      : `当前自定义号池共 ${getCustomMailProviderPoolSize()} 个邮箱，自动轮数会跟随数量；第 4/8 步仍需手动输入验证码`;
   }
   if (autoHintText && useGmail && useGeneratedAlias) {
     autoHintText.textContent = '请先填写 Gmail 原邮箱，步骤 3 会自动生成 Gmail +tag 地址';
@@ -11680,7 +11762,7 @@ function updateMailProviderUI() {
       : '当前已启用 2925 号池模式，请先在下方 2925 账号池中添加账号并选择邮箱';
   }
   if (autoHintText && showCloudflareTempEmailReceiveMailbox && !useCustomEmailPool) {
-    autoHintText.textContent = '若注册邮箱会转发到 Cloudflare Temp Email，请在“邮件接收”中填写实际接收转发邮件的邮箱。';
+    autoHintText.textContent = `若${getAuthEmailNoun()}会转发到 Cloudflare Temp Email，请在“邮件接收”中填写实际接收转发邮件的邮箱。`;
   }
   if (autoHintText && showCloudflareTempEmailRandomSubdomainToggle && inputTempEmailUseRandomSubdomain?.checked) {
     autoHintText.textContent = '已启用随机子域名：扩展会按当前选中的 Temp 域名提交，并额外携带 enableRandomSubdomain；是否生效取决于后端 RANDOM_SUBDOMAIN_DOMAINS 配置。';
@@ -11690,7 +11772,19 @@ function updateMailProviderUI() {
     const forwardProviderLabel = ICLOUD_FORWARD_MAIL_PROVIDER_LABELS[forwardProvider]
       || MAIL_PROVIDER_LOGIN_CONFIGS[forwardProvider]?.label
       || '目标邮箱';
-    autoHintText.textContent = `iCloud ${isIcloudComCnHost ? 'com.cn' : ''} 当前使用转发收码：第 4/8 步会从 ${forwardProviderLabel} 轮询验证码。`;
+    autoHintText.textContent = isSub2ApiSessionLoginMode()
+      ? `iCloud ${isIcloudComCnHost ? 'com.cn' : ''} 当前使用转发收码：第 3 步会从 ${forwardProviderLabel} 轮询验证码。`
+      : `iCloud ${isIcloudComCnHost ? 'com.cn' : ''} 当前使用转发收码：第 4/8 步会从 ${forwardProviderLabel} 轮询验证码。`;
+  }
+  if (isSub2ApiSessionLoginMode()) {
+    if (inputEmail.placeholder.includes('注册')) {
+      inputEmail.placeholder = inputEmail.placeholder.replace(/注册邮箱/g, '登录邮箱');
+    }
+    if (autoHintText) {
+      autoHintText.textContent = useHotmail
+        ? '请先校验并选择一个 Hotmail 账号作为登录邮箱'
+        : (useCustomEmail ? '请先填写本轮要登录的邮箱' : `先自动获取${uiCopy.label}，或手动粘贴登录邮箱后再继续`);
+    }
   }
   if (useHotmail) {
     inputEmail.value = getCurrentHotmailEmail();
@@ -12142,6 +12236,11 @@ function updatePanelModeUI() {
       ? '仅支持 OAuth'
       : '';
   }
+  updateLoginSessionCopy({
+    ...(latestState || {}),
+    panelMode,
+    plusAccountAccessStrategy: capabilityState?.effectivePlusAccountAccessStrategy || rawPlusAccountAccessStrategy,
+  });
   const useLocalCpaJson = panelMode === LOCAL_CPA_JSON_PANEL_MODE || panelMode === LOCAL_CPA_JSON_NO_RT_PANEL_MODE;
   const useLocalCpaJsonNoRt = panelMode === LOCAL_CPA_JSON_NO_RT_PANEL_MODE;
   const useSub2Api = panelMode === 'sub2api';
@@ -12473,7 +12572,7 @@ async function fetchGeneratedEmail(options = {}) {
   const { showFailureToast = true } = options;
   const uiCopy = getCurrentRegistrationEmailUiCopy();
   if (isCustomMailProvider()) {
-    throw new Error('当前邮箱服务为自定义邮箱，请直接填写注册邮箱。');
+    throw new Error(`当前邮箱服务为自定义邮箱，请直接填写${getAuthEmailNoun()}。`);
   }
   const defaultLabel = uiCopy.buttonLabel;
   btnFetchEmail.disabled = true;
@@ -13480,7 +13579,7 @@ stepsList?.addEventListener('click', async (event) => {
         let email = inputEmail.value.trim();
         if (!email) {
           if (isCustomMailProvider()) {
-            showToast('当前邮箱服务为自定义邮箱，请先填写注册邮箱后再执行第 3 步。', 'warn');
+            showToast(`当前邮箱服务为自定义邮箱，请先填写${getAuthEmailNoun()}后再执行第 3 步。`, 'warn');
             return;
           }
           try {
@@ -13859,7 +13958,7 @@ btnAutoContinue.addEventListener('click', async () => {
   const email = inputEmail.value.trim();
   if (!email) {
     showToast(
-      isCustomMailProvider() ? '请先填写自定义注册邮箱。' : '请先获取或粘贴邮箱。',
+      isCustomMailProvider() ? `请先填写自定义${getAuthEmailNoun()}。` : '请先获取或粘贴邮箱。',
       'warn'
     );
     return;

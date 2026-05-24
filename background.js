@@ -105,6 +105,13 @@ const PLUS_PAYPAL_CPA_SESSION_STEP_DEFINITIONS = self.MultiPageStepDefinitions?.
   plusPaymentMethod: 'paypal',
   plusAccountAccessStrategy: PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION,
 }) || PLUS_PAYPAL_STEP_DEFINITIONS;
+const SUB2API_SESSION_LOGIN_STEP_DEFINITIONS = self.MultiPageStepDefinitions?.getSteps?.({
+  activeFlowId: DEFAULT_ACTIVE_FLOW_ID,
+  panelMode: 'sub2api',
+  plusModeEnabled: false,
+  plusAccountAccessStrategy: PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION,
+  signupMethod: 'email',
+}) || [];
 const PLUS_PAYPAL_PHONE_STEP_DEFINITIONS = self.MultiPageStepDefinitions?.getSteps?.({
   activeFlowId: DEFAULT_ACTIVE_FLOW_ID,
   plusModeEnabled: true,
@@ -190,6 +197,7 @@ const ALL_STEP_DEFINITIONS = self.MultiPageStepDefinitions?.getAllSteps?.({
   ...NORMAL_STEP_DEFINITIONS,
   ...NORMAL_PHONE_STEP_DEFINITIONS,
   ...NORMAL_PHONE_BOUND_EMAIL_RELOGIN_STEP_DEFINITIONS,
+  ...SUB2API_SESSION_LOGIN_STEP_DEFINITIONS,
   ...PLUS_PAYPAL_STEP_DEFINITIONS,
   ...PLUS_PAYPAL_SUB2API_SESSION_STEP_DEFINITIONS,
   ...PLUS_PAYPAL_CPA_SESSION_STEP_DEFINITIONS,
@@ -14158,6 +14166,7 @@ async function acquireTopLevelAuthChainExecution(step, state = {}) {
 const normalStepRegistry = buildStepRegistry(NORMAL_STEP_DEFINITIONS);
 const normalPhoneStepRegistry = buildStepRegistry(NORMAL_PHONE_STEP_DEFINITIONS);
 const normalPhoneBoundEmailReloginStepRegistry = buildStepRegistry(NORMAL_PHONE_BOUND_EMAIL_RELOGIN_STEP_DEFINITIONS);
+const sub2ApiSessionLoginStepRegistry = buildStepRegistry(SUB2API_SESSION_LOGIN_STEP_DEFINITIONS);
 const plusPayPalStepRegistry = buildStepRegistry(PLUS_PAYPAL_STEP_DEFINITIONS);
 const plusPayPalPhoneStepRegistry = buildStepRegistry(PLUS_PAYPAL_PHONE_STEP_DEFINITIONS);
 const plusPayPalPhoneBoundEmailReloginStepRegistry = buildStepRegistry(PLUS_PAYPAL_PHONE_BOUND_EMAIL_RELOGIN_STEP_DEFINITIONS);
@@ -14184,6 +14193,16 @@ function getStepRegistryForState(state = {}) {
     return localCpaJsonNoRtStepRegistry;
   }
   const signupMethod = getSignupMethodForStepDefinitions(state);
+  const plusAccountAccessStrategy = signupMethod === SIGNUP_METHOD_PHONE
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH
+    : normalizePlusAccountAccessStrategyForState(state);
+  if (
+    getPanelMode(state) === 'sub2api'
+    && signupMethod === SIGNUP_METHOD_EMAIL
+    && plusAccountAccessStrategy === PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION
+  ) {
+    return sub2ApiSessionLoginStepRegistry;
+  }
   const useBoundEmailRelogin = signupMethod === SIGNUP_METHOD_PHONE
     && Boolean(state?.phoneSignupReloginAfterBindEmailEnabled);
   if (!isPlusModeState(state)) {
@@ -14193,9 +14212,6 @@ function getStepRegistryForState(state = {}) {
     return normalStepRegistry;
   }
   const paymentMethod = normalizePlusPaymentMethod(state?.plusPaymentMethod);
-  const plusAccountAccessStrategy = signupMethod === SIGNUP_METHOD_PHONE
-    ? PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH
-    : normalizePlusAccountAccessStrategyForState(state);
   if (paymentMethod === PLUS_PAYMENT_METHOD_GPC_HELPER) {
     if (plusAccountAccessStrategy === PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION) {
       return plusGpcSub2ApiSessionStepRegistry;
@@ -14922,7 +14938,7 @@ async function validateStep5PostCompletion(tabId, completionPayload = {}) {
 
 async function ensureStep8VerificationPageReady(options = {}) {
   const visibleStep = Number(options.visibleStep) || 8;
-  const authLoginStep = Number(options.authLoginStep) || (visibleStep >= 11 ? 10 : 7);
+  const authLoginStep = Number(options.authLoginStep) || (visibleStep === 3 ? 2 : (visibleStep >= 11 ? 10 : 7));
   const inspectState = async (overrides = {}) => getLoginAuthStateFromContent({
     ...options,
     ...overrides,

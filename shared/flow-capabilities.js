@@ -276,18 +276,27 @@
         : [PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH])
         .map(normalizePlusAccountAccessStrategy)
         .filter((strategy, index, strategies) => strategy && strategies.indexOf(strategy) === index);
-      const availablePlusAccountAccessStrategies = activeFlowId === 'openai'
-        && Boolean(flowState.supportsPlusMode)
-        && Boolean(runtimeLocks.plusModeEnabled)
+      const canUseSub2ApiSessionLoginFlow = activeFlowId === 'openai'
+        && effectivePanelMode === 'sub2api'
         && effectiveSignupMethod === SIGNUP_METHOD_EMAIL
+        && panelPlusAccountAccessStrategies.includes(PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION);
+      const availablePlusAccountAccessStrategies = activeFlowId === 'openai'
+        && effectiveSignupMethod === SIGNUP_METHOD_EMAIL
+        && (
+          (
+            Boolean(flowState.supportsPlusMode)
+            && Boolean(runtimeLocks.plusModeEnabled)
+          )
+          || canUseSub2ApiSessionLoginFlow
+        )
         ? panelPlusAccountAccessStrategies
         : [PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH];
       const effectivePlusAccountAccessStrategy = availablePlusAccountAccessStrategies.includes(requestedPlusAccountAccessStrategy)
         ? requestedPlusAccountAccessStrategy
         : PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
+      const usesSub2ApiSessionLoginFlow = canUseSub2ApiSessionLoginFlow
+        && effectivePlusAccountAccessStrategy === PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION;
       const canEditPlusAccountAccessStrategy = activeFlowId === 'openai'
-        && Boolean(flowState.supportsPlusMode)
-        && Boolean(runtimeLocks.plusModeEnabled)
         && effectiveSignupMethod === SIGNUP_METHOD_EMAIL
         && availablePlusAccountAccessStrategies.length > 1;
 
@@ -318,7 +327,7 @@
           activeFlowId,
           panelMode: effectivePanelMode,
           plusAccountAccessStrategy: effectivePlusAccountAccessStrategy,
-          plusModeEnabled: runtimeLocks.plusModeEnabled,
+          plusModeEnabled: usesSub2ApiSessionLoginFlow ? false : runtimeLocks.plusModeEnabled,
           signupMethod: effectiveSignupMethod,
         },
         availablePlusAccountAccessStrategies,
