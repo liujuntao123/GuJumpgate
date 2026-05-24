@@ -18,15 +18,31 @@
       },
       isStep6RecoverableResult,
       isStep6SuccessResult,
+      chrome: chromeApi = globalThis.chrome,
+      ensureContentScriptReadyOnTab,
       getTabId,
       refreshOAuthUrlBeforeStep6,
+      registerTab,
       reuseOrCreateTab,
       sendToContentScriptResilient,
       startOAuthFlowTimeoutWindow,
       STEP6_MAX_ATTEMPTS,
       throwIfStopped,
       DIRECT_CHATGPT_LOGIN_URL = 'https://chatgpt.com/',
+      SIGNUP_PAGE_INJECT_FILES = [],
+      waitForTabStableComplete,
     } = deps;
+
+    const DIRECT_CHATGPT_AUTH_HOSTS = new Set([
+      'auth.openai.com',
+      'auth0.openai.com',
+      'accounts.openai.com',
+    ]);
+    const DIRECT_CHATGPT_ENTRY_HOSTS = new Set([
+      'chatgpt.com',
+      'www.chatgpt.com',
+      'chat.openai.com',
+    ]);
 
     function isManagementSecretConfigError(error) {
       const message = String(typeof error === 'string' ? error : error?.message || '').trim();
@@ -232,6 +248,96 @@
       );
     }
 
+    function parseStep7Url(rawUrl = '') {
+      try {
+        return new URL(String(rawUrl || ''));
+      } catch {
+        return null;
+      }
+    }
+
+    function isDirectChatGptAuthUrl(rawUrl = '') {
+      const parsed = parseStep7Url(rawUrl);
+      return Boolean(parsed && DIRECT_CHATGPT_AUTH_HOSTS.has(String(parsed.hostname || '').toLowerCase()));
+    }
+
+    function isDirectChatGptEntryUrl(rawUrl = '') {
+      const parsed = parseStep7Url(rawUrl);
+      return Boolean(parsed && DIRECT_CHATGPT_ENTRY_HOSTS.has(String(parsed.hostname || '').toLowerCase()));
+    }
+
+    async function ensureDirectChatGptLoginTabReady(tabId, completionStep, timeoutMs) {
+      if (!Number.isInteger(tabId)) {
+        return;
+      }
+      if (typeof waitForTabStableComplete === 'function') {
+        await waitForTabStableComplete(tabId, {
+          timeoutMs: Math.min(Math.max(15000, timeoutMs || 0), 45000),
+          retryDelayMs: 300,
+          stableMs: 1200,
+          initialDelayMs: 300,
+        });
+      }
+      if (typeof ensureContentScriptReadyOnTab === 'function' && Array.isArray(SIGNUP_PAGE_INJECT_FILES) && SIGNUP_PAGE_INJECT_FILES.length) {
+        await ensureContentScriptReadyOnTab('signup-page', tabId, {
+          inject: SIGNUP_PAGE_INJECT_FILES,
+          injectSource: 'signup-page',
+          timeoutMs: Math.min(Math.max(20000, timeoutMs || 0), 45000),
+          retryDelayMs: 700,
+          logMessage: '步骤 2：ChatGPT 官网仍在加载，正在重试连接登录脚本...',
+          logStep: completionStep,
+          logStepKey: 'oauth-login',
+        });
+      }
+    }
+
+    async function waitForDirectChatGptAuthTab(options = {}) {
+      const {
+        baselineTabId = null,
+        timeoutMs = 15000,
+        completionStep = 2,
+      } = options;
+      if (!chromeApi?.tabs?.query) {
+        return null;
+      }
+
+      const startedAt = Date.now();
+      let lastEntryTab = null;
+      while (Date.now() - startedAt < timeoutMs) {
+        throwIfStopped();
+        const tabs = await chromeApi.tabs.query({}).catch(() => []);
+        const candidates = (tabs || [])
+          .filter((tab) => Number.isInteger(tab?.id))
+          .filter((tab) => tab.id === baselineTabId || isDirectChatGptAuthUrl(tab.url) || isDirectChatGptEntryUrl(tab.url));
+
+        const authTab = candidates.find((tab) => isDirectChatGptAuthUrl(tab.url));
+        if (authTab) {
+          if (typeof registerTab === 'function') {
+            await registerTab('signup-page', authTab.id);
+          }
+          if (typeof ensureContentScriptReadyOnTab === 'function' && Array.isArray(SIGNUP_PAGE_INJECT_FILES) && SIGNUP_PAGE_INJECT_FILES.length) {
+            await ensureContentScriptReadyOnTab('signup-page', authTab.id, {
+              inject: SIGNUP_PAGE_INJECT_FILES,
+              injectSource: 'signup-page',
+              timeoutMs: 20000,
+              retryDelayMs: 700,
+              logMessage: '步骤 2：认证页已打开，正在等待登录脚本就绪...',
+              logStep: completionStep,
+              logStepKey: 'oauth-login',
+            });
+          }
+          return authTab.id;
+        }
+
+        if (!lastEntryTab) {
+          lastEntryTab = candidates.find((tab) => tab.id === baselineTabId && isDirectChatGptEntryUrl(tab.url)) || null;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+
+      return lastEntryTab?.id || null;
+    }
+
     async function completeStep7PostLoginPhoneHandoff(state = {}, err, completionStep) {
       if (normalizeStep7SignupMethod(state?.resolvedSignupMethod || state?.signupMethod) === 'phone') {
         throw new Error(
@@ -349,32 +455,44 @@
             });
           }
 
-          await reuseOrCreateTab('signup-page', oauthUrl, { forceNew: true });
+          const loginTabId = await reuseOrCreateTab('signup-page', oauthUrl, directChatGptLogin
+            ? {
+              forceNew: true,
+              inject: SIGNUP_PAGE_INJECT_FILES,
+              injectSource: 'signup-page',
+            }
+            : { forceNew: true });
 
-          const result = await sendToContentScriptResilient(
-            'signup-page',
-            {
-              type: 'EXECUTE_NODE',
-              nodeId: 'oauth-login',
-              step: 7,
-              source: 'background',
-              payload: {
-                email: currentEmail,
-                phoneNumber: currentPhoneNumber,
-                countryId: currentState?.signupPhoneCompletedActivation?.countryId
-                  ?? currentState?.signupPhoneActivation?.countryId
-                  ?? null,
-                countryLabel: String(
-                  currentState?.signupPhoneCompletedActivation?.countryLabel
-                  || currentState?.signupPhoneActivation?.countryLabel
-                  || ''
-                ).trim(),
-                accountIdentifier,
-                loginIdentifierType: currentIdentifierType,
-                password,
-                visibleStep: completionStep,
-              },
+          if (directChatGptLogin) {
+            await ensureDirectChatGptLoginTabReady(loginTabId, completionStep, loginTimeoutMs);
+          }
+
+          const loginMessage = {
+            type: 'EXECUTE_NODE',
+            nodeId: 'oauth-login',
+            step: 7,
+            source: 'background',
+            payload: {
+              email: currentEmail,
+              phoneNumber: currentPhoneNumber,
+              countryId: currentState?.signupPhoneCompletedActivation?.countryId
+                ?? currentState?.signupPhoneActivation?.countryId
+                ?? null,
+              countryLabel: String(
+                currentState?.signupPhoneCompletedActivation?.countryLabel
+                || currentState?.signupPhoneActivation?.countryLabel
+                || ''
+              ).trim(),
+              accountIdentifier,
+              loginIdentifierType: currentIdentifierType,
+              password,
+              visibleStep: completionStep,
             },
+          };
+
+          let result = await sendToContentScriptResilient(
+            'signup-page',
+            loginMessage,
             {
               timeoutMs: loginTimeoutMs,
               responseTimeoutMs: loginTimeoutMs,
@@ -384,6 +502,28 @@
               logStepKey: 'oauth-login',
             }
           );
+
+          if (directChatGptLogin && result?.step6Outcome === 'recoverable' && result?.reason === 'direct_chatgpt_auth_tab_pending') {
+            const authTabId = await waitForDirectChatGptAuthTab({
+              baselineTabId: loginTabId,
+              timeoutMs: Math.min(20000, Math.max(5000, loginTimeoutMs)),
+              completionStep,
+            });
+            if (authTabId) {
+              result = await sendToContentScriptResilient(
+                'signup-page',
+                loginMessage,
+                {
+                  timeoutMs: loginTimeoutMs,
+                  responseTimeoutMs: loginTimeoutMs,
+                  retryDelayMs: 700,
+                  logMessage: '认证页正在切换，等待页面重新就绪后继续登录...',
+                  logStep: completionStep,
+                  logStepKey: 'oauth-login',
+                }
+              );
+            }
+          }
 
           if (result?.error) {
             throw new Error(result.error);

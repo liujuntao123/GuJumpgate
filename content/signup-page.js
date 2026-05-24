@@ -515,6 +515,7 @@ async function handle405ResendError(step, remainingTimeout = 30000) {
 // ============================================================
 
 const SIGNUP_ENTRY_TRIGGER_PATTERN = /免费注册|立即注册|注册|创建(?:账号|帐号|账户|帐户)|sign\s*up|register|create\s*account|create\s+account|get\s*started/i;
+const CHATGPT_HOME_LOGIN_TRIGGER_PATTERN = /^(?:登录|登陆|log\s*in|sign\s*in)$/i;
 const SIGNUP_EMAIL_INPUT_SELECTOR = [
   'input[type="email"]',
   'input[autocomplete="email"]',
@@ -695,6 +696,32 @@ function findSignupEntryTrigger(options = {}) {
   return collapsedViewport || looksLikeLoggedOutHome ? hiddenSignupTrigger : null;
 }
 
+function isChatGptEntryHost() {
+  const host = String(location?.hostname || '').toLowerCase();
+  return ['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(host);
+}
+
+function findChatGptHomeLoginTrigger() {
+  if (!isChatGptEntryHost()) {
+    return null;
+  }
+
+  const candidates = document.querySelectorAll('a, button, [role="button"], [role="link"]');
+  let fallback = null;
+  for (const el of Array.from(candidates)) {
+    if (!isActionEnabled(el)) continue;
+    const text = getActionText(el);
+    if (!text || !CHATGPT_HOME_LOGIN_TRIGGER_PATTERN.test(text)) continue;
+    if (isVisibleElement(el)) {
+      return el;
+    }
+    if (!fallback) {
+      fallback = el;
+    }
+  }
+  return fallback;
+}
+
 function getSignupPasswordDisplayedEmail() {
   const text = (document.body?.innerText || document.body?.textContent || '')
     .replace(/\s+/g, ' ')
@@ -781,6 +808,15 @@ function inspectSignupEntryState() {
     };
   }
 
+  const chatGptLoginTrigger = findChatGptHomeLoginTrigger();
+  if (chatGptLoginTrigger) {
+    return {
+      state: 'chatgpt_login_home',
+      loginEntryTrigger: chatGptLoginTrigger,
+      url: location.href,
+    };
+  }
+
   const switchToEmailTrigger = findSignupUseEmailTrigger();
   if (switchToEmailTrigger) {
     return {
@@ -814,6 +850,15 @@ function getSignupEntryStateSummary(snapshot = inspectSignupEntryState()) {
       tag: (snapshot.signupTrigger.tagName || '').toLowerCase(),
       text: getActionText(snapshot.signupTrigger).slice(0, 80),
       visible: isVisibleElement(snapshot.signupTrigger),
+    };
+  }
+
+  if (snapshot?.loginEntryTrigger) {
+    summary.loginEntryTrigger = {
+      tag: (snapshot.loginEntryTrigger.tagName || '').toLowerCase(),
+      text: getActionText(snapshot.loginEntryTrigger).slice(0, 80),
+      visible: isVisibleElement(snapshot.loginEntryTrigger),
+      enabled: isActionEnabled(snapshot.loginEntryTrigger),
     };
   }
 
@@ -4180,6 +4225,7 @@ function findLoginMoreOptionsTrigger() {
 }
 
 function inspectLoginAuthState() {
+  const chatGptLoginTrigger = findChatGptHomeLoginTrigger();
   const retryState = getLoginTimeoutErrorPageState();
   const verificationTarget = getVerificationCodeTarget();
   const passwordInput = getLoginPasswordInput();
@@ -4222,6 +4268,7 @@ function inspectLoginAuthState() {
     phoneVerificationPage,
     oauthConsentPage,
     consentReady,
+    chatGptLoginTrigger,
   };
 
   if (retryState) {
@@ -4302,6 +4349,14 @@ function inspectLoginAuthState() {
     };
   }
 
+  if (chatGptLoginTrigger) {
+    return {
+      ...baseState,
+      state: 'chatgpt_login_home',
+      loginEntryTrigger: chatGptLoginTrigger,
+    };
+  }
+
   return baseState;
 }
 
@@ -4324,6 +4379,7 @@ function serializeLoginAuthState(snapshot) {
     hasSubmitButton: Boolean(snapshot?.submitButton),
     hasSwitchTrigger: Boolean(snapshot?.switchTrigger),
     hasLoginEntryTrigger: Boolean(snapshot?.loginEntryTrigger),
+    hasChatGptLoginTrigger: Boolean(snapshot?.chatGptLoginTrigger),
     hasPhoneEntryTrigger: Boolean(snapshot?.phoneEntryTrigger),
     hasMoreOptionsTrigger: Boolean(snapshot?.moreOptionsTrigger),
     verificationVisible: Boolean(snapshot?.verificationVisible),
@@ -4354,6 +4410,8 @@ function getLoginAuthStateLabel(snapshot) {
       return 'OAuth 授权页';
     case 'entry_page':
       return '登录入口页';
+    case 'chatgpt_login_home':
+      return 'ChatGPT 官网登录入口页';
     case 'add_phone_page':
       return '手机号页';
     case 'add_email_page':
@@ -5694,6 +5752,94 @@ async function step6OpenLoginEntry(payload, snapshot) {
   });
 }
 
+async function waitForChatGptHomeLoginTransition(timeout = 15000) {
+  const start = Date.now();
+  let snapshot = normalizeStep6Snapshot(inspectLoginAuthState());
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+    snapshot = normalizeStep6Snapshot(inspectLoginAuthState());
+    if (snapshot.state !== 'unknown' && snapshot.state !== 'chatgpt_login_home') {
+      return snapshot;
+    }
+    await sleep(250);
+  }
+
+  return snapshot;
+}
+
+async function step6OpenChatGptHomeLogin(payload, snapshot) {
+  const performOperationWithDelay = typeof getOperationDelayRunner === 'function'
+    ? getOperationDelayRunner()
+    : async (metadata, operation) => {
+        const rootScope = typeof window !== 'undefined' ? window : globalThis;
+        const gate = rootScope?.CodexOperationDelay?.performOperationWithDelay;
+        return typeof gate === 'function' ? gate(metadata, operation) : operation();
+      };
+  const visibleStep = Math.floor(Number(payload?.visibleStep) || 0) || 7;
+  const currentSnapshot = normalizeStep6Snapshot(snapshot || inspectLoginAuthState());
+  const trigger = currentSnapshot.loginEntryTrigger || currentSnapshot.chatGptLoginTrigger || findChatGptHomeLoginTrigger();
+  if (!trigger || !isActionEnabled(trigger)) {
+    return createStep6RecoverableResult('missing_chatgpt_login_trigger', currentSnapshot, {
+      message: 'ChatGPT 官网没有可点击的登录入口。',
+    });
+  }
+
+  log(`步骤 ${visibleStep}：检测到 ChatGPT 官网登录入口，正在点击 "${getActionText(trigger).slice(0, 80)}"...`, 'info', { step: visibleStep, stepKey: 'oauth-login' });
+  await humanPause(350, 900);
+  await performOperationWithDelay({ stepKey: 'oauth-login', kind: 'click', label: 'open-chatgpt-login-entry' }, async () => {
+    simulateClick(trigger);
+  });
+
+  const nextSnapshot = await waitForChatGptHomeLoginTransition(15000);
+  if (nextSnapshot.state === 'email_page') {
+    return step6LoginFromEmailPage(payload, nextSnapshot);
+  }
+  if (nextSnapshot.state === 'password_page') {
+    return step6LoginFromPasswordPage(payload, nextSnapshot);
+  }
+  if (nextSnapshot.state === 'phone_entry_page') {
+    return step6LoginFromPhonePage(payload, nextSnapshot);
+  }
+  if (nextSnapshot.state === 'entry_page') {
+    return step6OpenLoginEntry(payload, nextSnapshot);
+  }
+  if (nextSnapshot.state === 'verification_page') {
+    return finalizeStep6VerificationReady({
+      visibleStep,
+      loginVerificationRequestedAt: null,
+      via: 'chatgpt_home_login_verification_page',
+    });
+  }
+  if (nextSnapshot.state === 'oauth_consent_page') {
+    return createStep6OAuthConsentSuccessResult(nextSnapshot, {
+      via: 'chatgpt_home_login_oauth_consent_page',
+    });
+  }
+  if (nextSnapshot.state === 'add_email_page') {
+    return createStep6AddEmailSuccessResult(nextSnapshot, {
+      via: 'chatgpt_home_login_add_email_page',
+    });
+  }
+  if (nextSnapshot.state === 'login_timeout_error_page') {
+    const transition = await createStep6LoginTimeoutRecoveryTransition(
+      'login_timeout_after_chatgpt_home_login',
+      nextSnapshot,
+      '点击 ChatGPT 官网登录入口后进入登录超时报错页。',
+      { visibleStep }
+    );
+    if (transition.action === 'done') return transition.result;
+    if (transition.action === 'phone') return step6LoginFromPhonePage(payload, transition.snapshot);
+    if (transition.action === 'email') return step6LoginFromEmailPage(payload, transition.snapshot);
+    if (transition.action === 'password') return step6LoginFromPasswordPage(payload, transition.snapshot);
+    return transition.result;
+  }
+
+  return createStep6RecoverableResult('direct_chatgpt_auth_tab_pending', nextSnapshot, {
+    message: '点击 ChatGPT 官网登录入口后仍未在当前标签进入认证页，正在等待新打开的认证标签页。',
+  });
+}
+
 async function step6SwitchToOneTimeCodeLogin(payload, snapshot) {
   const performOperationWithDelay = typeof getOperationDelayRunner === 'function'
     ? getOperationDelayRunner()
@@ -6177,6 +6323,10 @@ async function step6_login(payload) {
 
   if (snapshot.state === 'entry_page') {
     return step6OpenLoginEntry(payload, snapshot);
+  }
+
+  if (snapshot.state === 'chatgpt_login_home') {
+    return step6OpenChatGptHomeLogin(payload, snapshot);
   }
 
   throwForStep6FatalState(snapshot, visibleStep);

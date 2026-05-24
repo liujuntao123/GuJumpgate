@@ -13715,7 +13715,9 @@ const step6Executor = self.MultiPageBackgroundStep6?.createStep6Executor({
 });
 const step7Executor = self.MultiPageBackgroundStep7?.createStep7Executor({
   addLog,
+  chrome,
   completeNodeFromBackground,
+  ensureContentScriptReadyOnTab,
   getErrorMessage,
   getLoginAuthStateLabel,
   getOAuthFlowStepTimeoutMs,
@@ -13725,12 +13727,15 @@ const step7Executor = self.MultiPageBackgroundStep7?.createStep7Executor({
   isStep6RecoverableResult,
   isStep6SuccessResult,
   phoneVerificationHelpers,
+  registerTab,
   refreshOAuthUrlBeforeStep6,
   reuseOrCreateTab,
   sendToContentScriptResilient,
   startOAuthFlowTimeoutWindow,
   STEP6_MAX_ATTEMPTS,
+  SIGNUP_PAGE_INJECT_FILES,
   throwIfStopped,
+  waitForTabStableComplete,
 });
 const step8Executor = self.MultiPageBackgroundStep8?.createStep8Executor({
   addLog,
