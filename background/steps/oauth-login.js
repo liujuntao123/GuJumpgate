@@ -159,6 +159,28 @@
       return String(result?.state || '').trim();
     }
 
+    function normalizeStep7ContentResult(result = {}) {
+      if (!result || typeof result !== 'object') {
+        return result;
+      }
+      if (result.step6Outcome || result.state || result.error) {
+        return result;
+      }
+      if (result.payload && typeof result.payload === 'object') {
+        return {
+          ok: result.ok,
+          ...result.payload,
+        };
+      }
+      if (result.result && typeof result.result === 'object') {
+        return {
+          ok: result.ok,
+          ...result.result,
+        };
+      }
+      return result;
+    }
+
     function isStep7OauthConsentResult(result = {}) {
       return Boolean(result?.directOAuthConsentPage)
         || getStep7ResultState(result) === 'oauth_consent_page';
@@ -338,6 +360,58 @@
       return lastEntryTab?.id || null;
     }
 
+    async function inspectStep7LoginAuthState(completionStep, timeoutMs = 12000) {
+      if (typeof sendToContentScriptResilient !== 'function') {
+        return null;
+      }
+      const boundedTimeoutMs = Math.max(1000, Math.min(Number(timeoutMs) || 12000, 20000));
+      const result = await sendToContentScriptResilient(
+        'signup-page',
+        {
+          type: 'GET_LOGIN_AUTH_STATE',
+          source: 'background',
+          payload: {},
+        },
+        {
+          timeoutMs: boundedTimeoutMs,
+          responseTimeoutMs: boundedTimeoutMs,
+          retryDelayMs: 600,
+          logMessage: '步骤 2：登录页结果未直接识别，正在复核当前认证页状态...',
+          logStep: completionStep,
+          logStepKey: 'oauth-login',
+        }
+      );
+      return normalizeStep7ContentResult(result || {});
+    }
+
+    function buildStep7SuccessResultFromAuthState(authState = {}, options = {}) {
+      const state = getStep7ResultState(authState);
+      if (!state) {
+        return null;
+      }
+      if (
+        state !== 'verification_page'
+        && state !== 'phone_verification_page'
+        && state !== 'oauth_consent_page'
+        && state !== 'add_email_page'
+        && state !== 'add_phone_page'
+      ) {
+        return null;
+      }
+      return {
+        step6Outcome: 'success',
+        ...authState,
+        state,
+        url: authState?.url || '',
+        via: options.via || `auth_state_${state}`,
+        loginVerificationRequestedAt: options.loginVerificationRequestedAt || authState?.loginVerificationRequestedAt || null,
+        ...(state === 'phone_verification_page' ? { phoneVerificationPage: true } : {}),
+        ...(state === 'oauth_consent_page' ? { skipLoginVerificationStep: true, directOAuthConsentPage: true } : {}),
+        ...(state === 'add_email_page' ? { addEmailPage: true } : {}),
+        ...(state === 'add_phone_page' ? { addPhonePage: true, skipLoginVerificationStep: true } : {}),
+      };
+    }
+
     async function completeStep7PostLoginPhoneHandoff(state = {}, err, completionStep) {
       if (normalizeStep7SignupMethod(state?.resolvedSignupMethod || state?.signupMethod) === 'phone') {
         throw new Error(
@@ -490,7 +564,7 @@
             },
           };
 
-          let result = await sendToContentScriptResilient(
+          let result = normalizeStep7ContentResult(await sendToContentScriptResilient(
             'signup-page',
             loginMessage,
             {
@@ -501,7 +575,7 @@
               logStep: completionStep,
               logStepKey: 'oauth-login',
             }
-          );
+          ));
 
           if (directChatGptLogin && result?.step6Outcome === 'recoverable' && result?.reason === 'direct_chatgpt_auth_tab_pending') {
             const authTabId = await waitForDirectChatGptAuthTab({
@@ -510,7 +584,7 @@
               completionStep,
             });
             if (authTabId) {
-              result = await sendToContentScriptResilient(
+              result = normalizeStep7ContentResult(await sendToContentScriptResilient(
                 'signup-page',
                 loginMessage,
                 {
@@ -521,7 +595,7 @@
                   logStep: completionStep,
                   logStepKey: 'oauth-login',
                 }
-              );
+              ));
             }
           }
 
@@ -545,6 +619,30 @@
             const reasonMessage = result.message
               || `当前停留在${getLoginAuthStateLabel(result.state)}，准备重新执行步骤 ${completionStep}。`;
             throw new Error(reasonMessage);
+          }
+
+          const inspectedAuthState = await inspectStep7LoginAuthState(completionStep, Math.min(12000, loginTimeoutMs));
+          if (inspectedAuthState?.error) {
+            throw new Error(inspectedAuthState.error);
+          }
+          const inspectedSuccessResult = buildStep7SuccessResultFromAuthState(inspectedAuthState, {
+            via: 'post_unrecognized_result_auth_state',
+          });
+          if (inspectedSuccessResult && isStep6SuccessResult(inspectedSuccessResult)) {
+            await addLog(
+              `步骤 ${completionStep}：登录响应未直接识别，但复核当前页面已进入${getLoginAuthStateLabel(inspectedSuccessResult)}，按成功进入验证码/后续页面处理。`,
+              'warn',
+              { step: completionStep, stepKey: 'oauth-login' }
+            );
+            const completionPayload = buildStep7CompletionPayload(
+              inspectedSuccessResult,
+              { ...(currentState || {}), visibleStep: completionStep },
+              currentIdentifierType,
+              currentPhoneNumber
+            );
+
+            await completeNodeFromBackground(state?.nodeId || 'oauth-login', completionPayload);
+            return;
           }
 
           throw new Error(`步骤 ${completionStep}：认证页未返回可识别的登录结果。`);
