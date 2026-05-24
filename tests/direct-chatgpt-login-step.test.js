@@ -171,3 +171,62 @@ test('direct ChatGPT login falls back to current auth state when result is unrec
   assert.equal(calls.complete.length, 1);
   assert.equal(calls.complete[0].payload.loginVerificationRequestedAt, null);
 });
+
+test('direct ChatGPT login completes when browser already has email verification tab', async () => {
+  const calls = {
+    complete: [],
+    ensureReady: [],
+    register: [],
+    sent: [],
+  };
+  const executor = globalThis.MultiPageBackgroundStep7.createStep7Executor({
+    addLog: async () => {},
+    chrome: {
+      tabs: {
+        query: async () => [
+          { id: 321, url: 'https://auth.openai.com/email-verification' },
+          { id: 123, url: 'https://chatgpt.com/' },
+        ],
+      },
+    },
+    completeNodeFromBackground: async (nodeId, payload) => {
+      calls.complete.push({ nodeId, payload });
+    },
+    ensureContentScriptReadyOnTab: async (source, tabId, options) => {
+      calls.ensureReady.push({ source, tabId, options });
+    },
+    getErrorMessage: (error) => error?.message || String(error || ''),
+    getLoginAuthStateLabel: (snapshot) => snapshot?.state || 'unknown',
+    getOAuthFlowStepTimeoutMs: async () => 30000,
+    getState: async () => ({}),
+    isStep6RecoverableResult: (result) => result?.step6Outcome === 'recoverable',
+    isStep6SuccessResult: (result) => result?.step6Outcome === 'success',
+    refreshOAuthUrlBeforeStep6: async () => {
+      throw new Error('OAuth URL refresh should not run in direct ChatGPT login mode');
+    },
+    registerTab: async (source, tabId) => {
+      calls.register.push({ source, tabId });
+    },
+    reuseOrCreateTab: async () => 123,
+    sendToContentScriptResilient: async (source, message) => {
+      calls.sent.push({ source, message });
+      return { ok: true };
+    },
+    SIGNUP_PAGE_INJECT_FILES: ['content/utils.js', 'content/signup-page.js'],
+    STEP6_MAX_ATTEMPTS: 1,
+    throwIfStopped: () => {},
+  });
+
+  await executor.executeStep7({
+    directChatGptLogin: true,
+    email: 'alice@example.com',
+    visibleStep: 2,
+  });
+
+  assert.equal(calls.sent.length, 1);
+  assert.deepEqual(calls.register[0], { source: 'signup-page', tabId: 321 });
+  assert.equal(calls.ensureReady.at(-1).tabId, 321);
+  assert.equal(calls.complete.length, 1);
+  assert.equal(calls.complete[0].nodeId, 'oauth-login');
+  assert.equal(calls.complete[0].payload.loginVerificationRequestedAt, null);
+});

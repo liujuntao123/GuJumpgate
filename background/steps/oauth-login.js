@@ -283,6 +283,15 @@
       return Boolean(parsed && DIRECT_CHATGPT_AUTH_HOSTS.has(String(parsed.hostname || '').toLowerCase()));
     }
 
+    function isDirectChatGptVerificationUrl(rawUrl = '') {
+      const parsed = parseStep7Url(rawUrl);
+      return Boolean(
+        parsed
+        && DIRECT_CHATGPT_AUTH_HOSTS.has(String(parsed.hostname || '').toLowerCase())
+        && /\/email-verification(?:[/?#]|$)/i.test(String(parsed.pathname || ''))
+      );
+    }
+
     function isDirectChatGptEntryUrl(rawUrl = '') {
       const parsed = parseStep7Url(rawUrl);
       return Boolean(parsed && DIRECT_CHATGPT_ENTRY_HOSTS.has(String(parsed.hostname || '').toLowerCase()));
@@ -358,6 +367,53 @@
       }
 
       return lastEntryTab?.id || null;
+    }
+
+    async function attachDirectChatGptAuthTab(tabId, completionStep) {
+      if (!Number.isInteger(tabId)) {
+        return;
+      }
+      if (typeof registerTab === 'function') {
+        await registerTab('signup-page', tabId);
+      }
+      if (typeof ensureContentScriptReadyOnTab === 'function' && Array.isArray(SIGNUP_PAGE_INJECT_FILES) && SIGNUP_PAGE_INJECT_FILES.length) {
+        await ensureContentScriptReadyOnTab('signup-page', tabId, {
+          inject: SIGNUP_PAGE_INJECT_FILES,
+          injectSource: 'signup-page',
+          timeoutMs: 20000,
+          retryDelayMs: 700,
+          logMessage: '步骤 2：认证页已打开，正在等待登录脚本就绪...',
+          logStep: completionStep,
+          logStepKey: 'oauth-login',
+        });
+      }
+    }
+
+    async function recoverDirectChatGptVerificationTab(completionStep, options = {}) {
+      if (!chromeApi?.tabs?.query) {
+        return null;
+      }
+      const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 12000, 30000));
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        throwIfStopped();
+        const tabs = await chromeApi.tabs.query({}).catch(() => []);
+        const verificationTab = (tabs || [])
+          .filter((tab) => Number.isInteger(tab?.id))
+          .find((tab) => isDirectChatGptVerificationUrl(tab?.url));
+        if (verificationTab) {
+          await attachDirectChatGptAuthTab(verificationTab.id, completionStep);
+          return {
+            step6Outcome: 'success',
+            state: 'verification_page',
+            url: String(verificationTab.url || ''),
+            via: 'direct_chatgpt_email_verification_tab',
+            loginVerificationRequestedAt: null,
+          };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      return null;
     }
 
     async function inspectStep7LoginAuthState(completionStep, timeoutMs = 12000) {
@@ -616,9 +672,50 @@
           }
 
           if (isStep6RecoverableResult(result)) {
+            if (directChatGptLogin) {
+              const directVerificationResult = await recoverDirectChatGptVerificationTab(completionStep, {
+                timeoutMs: Math.min(12000, loginTimeoutMs),
+              });
+              if (directVerificationResult) {
+                await addLog(
+                  `步骤 ${completionStep}：登录脚本返回可恢复状态，但已检测到验证码页（${directVerificationResult.url}），直接进入获取验证码步骤。`,
+                  'ok',
+                  { step: completionStep, stepKey: 'oauth-login' }
+                );
+                const completionPayload = buildStep7CompletionPayload(
+                  directVerificationResult,
+                  { ...(currentState || {}), visibleStep: completionStep },
+                  currentIdentifierType,
+                  currentPhoneNumber
+                );
+                await completeNodeFromBackground(state?.nodeId || 'oauth-login', completionPayload);
+                return;
+              }
+            }
             const reasonMessage = result.message
               || `当前停留在${getLoginAuthStateLabel(result.state)}，准备重新执行步骤 ${completionStep}。`;
             throw new Error(reasonMessage);
+          }
+
+          if (directChatGptLogin) {
+            const directVerificationResult = await recoverDirectChatGptVerificationTab(completionStep, {
+              timeoutMs: Math.min(12000, loginTimeoutMs),
+            });
+            if (directVerificationResult) {
+              await addLog(
+                `步骤 ${completionStep}：登录响应未识别，但已检测到验证码页（${directVerificationResult.url}），直接进入获取验证码步骤。`,
+                'ok',
+                { step: completionStep, stepKey: 'oauth-login' }
+              );
+              const completionPayload = buildStep7CompletionPayload(
+                directVerificationResult,
+                { ...(currentState || {}), visibleStep: completionStep },
+                currentIdentifierType,
+                currentPhoneNumber
+              );
+              await completeNodeFromBackground(state?.nodeId || 'oauth-login', completionPayload);
+              return;
+            }
           }
 
           const inspectedAuthState = await inspectStep7LoginAuthState(completionStep, Math.min(12000, loginTimeoutMs));
