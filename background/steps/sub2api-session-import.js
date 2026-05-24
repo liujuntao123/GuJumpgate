@@ -9,6 +9,8 @@
   const SESSION_CONTENT_READY_TIMEOUT_MS = 45000;
   const SESSION_READ_MESSAGE_TIMEOUT_MS = 30000;
   const SESSION_READ_RESPONSE_TIMEOUT_MS = 15000;
+  const SESSION_ACCESS_TOKEN_WAIT_TIMEOUT_MS = 45000;
+  const SESSION_ACCESS_TOKEN_RETRY_DELAY_MS = 1500;
   const SESSION_IMPORT_TIMEOUT_MS = 120000;
 
   function createSub2ApiSessionImportExecutor(deps = {}) {
@@ -258,37 +260,53 @@
         logMessage: `步骤 ${visibleStep}：正在等待 ChatGPT 会话页完成加载，再继续读取当前登录会话...`,
       });
 
-      const sessionResult = await sendTabMessageUntilStopped(tabId, PLUS_CHECKOUT_SOURCE, {
-        type: 'PLUS_CHECKOUT_GET_STATE',
-        source: 'background',
-        payload: {
-          includeSession: true,
-          includeAccessToken: true,
-        },
-      }, {
-        timeoutMs: SESSION_READ_MESSAGE_TIMEOUT_MS,
-        responseTimeoutMs: SESSION_READ_RESPONSE_TIMEOUT_MS,
-        retryDelayMs: 300,
-      });
-      if (sessionResult?.error) {
-        throw new Error(sessionResult.error);
+      const startedAt = Date.now();
+      let lastSession = null;
+      let lastError = null;
+      let attempt = 0;
+
+      while (Date.now() - startedAt < SESSION_ACCESS_TOKEN_WAIT_TIMEOUT_MS) {
+        throwIfStopped();
+        attempt += 1;
+        const sessionResult = await sendTabMessageUntilStopped(tabId, PLUS_CHECKOUT_SOURCE, {
+          type: 'PLUS_CHECKOUT_GET_STATE',
+          source: 'background',
+          payload: {
+            includeSession: true,
+            includeAccessToken: true,
+          },
+        }, {
+          timeoutMs: SESSION_READ_MESSAGE_TIMEOUT_MS,
+          responseTimeoutMs: SESSION_READ_RESPONSE_TIMEOUT_MS,
+          retryDelayMs: 300,
+        });
+        if (sessionResult?.error) {
+          lastError = new Error(sessionResult.error);
+        } else {
+          const session = sessionResult?.session && typeof sessionResult.session === 'object' && !Array.isArray(sessionResult.session)
+            ? sessionResult.session
+            : null;
+          const accessToken = normalizeString(
+            sessionResult?.accessToken
+            || session?.accessToken
+          );
+          lastSession = { session, accessToken };
+          if (accessToken) {
+            return lastSession;
+          }
+          lastError = new Error(`步骤 ${visibleStep}：ChatGPT 会话已响应但暂未返回 accessToken。`);
+        }
+
+        if (attempt === 1 || attempt % 5 === 0) {
+          await addStepLog(visibleStep, 'ChatGPT 登录会话尚未返回 accessToken，继续等待...', 'warn');
+        }
+        await sleepWithStop(SESSION_ACCESS_TOKEN_RETRY_DELAY_MS);
       }
 
-      const session = sessionResult?.session && typeof sessionResult.session === 'object' && !Array.isArray(sessionResult.session)
-        ? sessionResult.session
-        : null;
-      const accessToken = normalizeString(
-        sessionResult?.accessToken
-        || session?.accessToken
-      );
-      if (!session && !accessToken) {
-        throw new Error(`步骤 ${visibleStep}：未读取到有效的 ChatGPT 会话或 accessToken，请确认当前标签页仍处于已登录状态。`);
+      if (lastSession?.session && !lastSession.accessToken) {
+        throw new Error(`步骤 ${visibleStep}：已读取到 ChatGPT 会话，但缺少 accessToken，请确认登录已完成后重试。`);
       }
-
-      return {
-        session,
-        accessToken,
-      };
+      throw lastError || new Error(`步骤 ${visibleStep}：未读取到有效的 ChatGPT 会话或 accessToken，请确认当前标签页仍处于已登录状态。`);
     }
 
     async function executeSub2ApiSessionImport(state = {}) {

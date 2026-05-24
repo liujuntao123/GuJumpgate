@@ -296,6 +296,20 @@ function isEmailVerificationPage() {
   return /\/email-verification(?:[/?#]|$)/i.test(location.pathname || '');
 }
 
+function isLikelyLoggedInChatGptUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    const host = String(parsed.hostname || '').toLowerCase();
+    if (!['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(host)) {
+      return false;
+    }
+    const path = String(parsed.pathname || '');
+    return !/^\/(?:auth\/|create-account\/|email-verification|log-in|add-phone)(?:[/?#]|$)/i.test(path);
+  } catch {
+    return false;
+  }
+}
+
 function getContactVerificationServerErrorText() {
   const path = String(location?.pathname || '');
   if (!/\/contact-verification(?:[/?#]|$)/i.test(path)) {
@@ -3273,6 +3287,8 @@ function isSignupVerificationPageInteractiveReady(snapshot = null) {
 function isStep8Ready() {
   const continueBtn = getPrimaryContinueButton();
   if (!continueBtn) return false;
+  if (isEmailVerificationPage()) return false;
+  if (getVerificationCodeTarget()) return false;
   if (isVerificationPageStillVisible()) return false;
   if (isPhoneVerificationPageReady()) return false;
   if (isAddPhonePageReady()) return false;
@@ -5085,6 +5101,10 @@ async function waitForVerificationSubmitOutcome(step, timeout, options = {}) {
       return { success: true };
     }
 
+    if (step === 8 && isLikelyLoggedInChatGptUrl(location.href)) {
+      return { success: true, url: location.href };
+    }
+
     if (step === 8 && isAddPhonePageReady()) {
       return { success: true, addPhonePage: true, url: location.href };
     }
@@ -5123,6 +5143,24 @@ async function waitForVerificationSubmitOutcome(step, timeout, options = {}) {
     return {
       invalidCode: true,
       errorText: getVerificationErrorText() || '提交后仍停留在验证码页面，准备重新发送验证码。',
+    };
+  }
+
+  if (step === 8) {
+    if (isStep8Ready()) {
+      return { success: true, url: location.href };
+    }
+    if (isLikelyLoggedInChatGptUrl(location.href)) {
+      return { success: true, url: location.href };
+    }
+    if (isAddPhonePageReady()) {
+      return { success: true, addPhonePage: true, url: location.href };
+    }
+    return {
+      success: true,
+      pendingPostSubmit: true,
+      url: location.href,
+      state: inspectLoginAuthState()?.state || 'unknown',
     };
   }
 
@@ -5250,7 +5288,10 @@ async function fillVerificationCode(step, payload) {
     }
   }
   if (step === 8) {
-    if (isStep8Ready()) {
+    const loginVerificationTarget = getVerificationCodeTarget();
+    const loginEmailVerificationPage = isEmailVerificationPage()
+      || Boolean(document.querySelector('form[action*="email-verification" i]'));
+    if (!loginVerificationTarget && !loginEmailVerificationPage && isStep8Ready()) {
       log(`步骤 ${step}：检测到页面已进入 OAuth 同意页，本次验证码提交按成功处理。`, 'ok');
       return { success: true, assumed: true, alreadyAdvanced: true };
     }
@@ -5320,7 +5361,7 @@ async function fillVerificationCode(step, payload) {
 
   if (splitInputs?.length >= 6) {
     log(`步骤 ${step}：发现分开的单字符验证码输入框，正在逐个填写...`);
-    await performOperationWithDelay({ stepKey: 'fetch-signup-code', kind: 'grouped-code', label: 'split-code' }, async () => {
+    await performOperationWithDelay({ stepKey: step === 8 ? 'fetch-login-code' : 'fetch-signup-code', kind: 'grouped-code', label: 'split-code' }, async () => {
       for (let i = 0; i < 6 && i < splitInputs.length; i++) {
         const targetInput = splitInputs[i];
         try {
@@ -5347,7 +5388,7 @@ async function fillVerificationCode(step, payload) {
     const splitSubmitBtn = await waitForVerificationSubmitButton(splitInputs[0], 2000).catch(() => null);
     if (splitSubmitBtn) {
       await humanPause(450, 1200);
-      await performOperationWithDelay({ stepKey: 'fetch-signup-code', kind: 'submit', label: 'submit-code' }, async () => {
+      await performOperationWithDelay({ stepKey: step === 8 ? 'fetch-login-code' : 'fetch-signup-code', kind: 'submit', label: 'submit-code' }, async () => {
         simulateClick(splitSubmitBtn);
       });
       log(`步骤 ${step}：分格验证码已提交`);
@@ -5377,7 +5418,7 @@ async function fillVerificationCode(step, payload) {
     throw new Error('未找到验证码输入框。URL: ' + location.href);
   }
 
-  await performOperationWithDelay({ stepKey: step === 8 ? 'oauth-login' : 'fetch-signup-code', kind: 'fill', label: 'verification-code' }, async () => {
+  await performOperationWithDelay({ stepKey: step === 8 ? 'fetch-login-code' : 'fetch-signup-code', kind: 'fill', label: 'verification-code' }, async () => {
     fillInput(codeInput, code);
   });
   log(`步骤 ${step}：验证码已填写`);
@@ -5388,7 +5429,7 @@ async function fillVerificationCode(step, payload) {
 
   if (submitBtn) {
     await humanPause(450, 1200);
-    await performOperationWithDelay({ stepKey: step === 8 ? 'oauth-login' : 'fetch-signup-code', kind: 'submit', label: 'submit-code' }, async () => {
+    await performOperationWithDelay({ stepKey: step === 8 ? 'fetch-login-code' : 'fetch-signup-code', kind: 'submit', label: 'submit-code' }, async () => {
       simulateClick(submitBtn);
     });
     log(`步骤 ${step}：验证码已提交`);

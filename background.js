@@ -5313,6 +5313,7 @@ async function requestHotmailLocalCode(account, pollPayload = {}) {
 }
 
 async function pollHotmailVerificationCodeViaLocalHelper(step, account, pollPayload = {}) {
+  const logStep = Math.floor(Number(pollPayload.logStep) || 0) || step;
   const maxAttempts = Number(pollPayload.maxAttempts) || 5;
   const intervalMs = Number(pollPayload.intervalMs) || 3000;
   let workingAccount = account;
@@ -5321,16 +5322,16 @@ async function pollHotmailVerificationCodeViaLocalHelper(step, account, pollPayl
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     throwIfStopped();
     try {
-      await addLog(`步骤 ${step}：正在通过本地助手轮询 Hotmail 验证码（${attempt}/${maxAttempts}）...`, 'info');
+      await addLog(`步骤 ${logStep}：正在通过本地助手轮询 Hotmail 验证码（${attempt}/${maxAttempts}）...`, 'info');
       const fetchResult = await requestHotmailLocalCode(workingAccount, pollPayload);
       workingAccount = fetchResult.account;
 
       if (fetchResult.code) {
         const mailboxLabel = fetchResult.message?.mailbox || 'INBOX';
         if (fetchResult.usedTimeFallback) {
-          await addLog(`步骤 ${step}：本地助手使用时间回退后命中 Hotmail ${mailboxLabel} 验证码。`, 'warn');
+          await addLog(`步骤 ${logStep}：本地助手使用时间回退后命中 Hotmail ${mailboxLabel} 验证码。`, 'warn');
         }
-        await addLog(`步骤 ${step}：已通过本地助手在 Hotmail ${mailboxLabel} 中找到验证码：${fetchResult.code}`, 'ok');
+        await addLog(`步骤 ${logStep}：已通过本地助手在 Hotmail ${mailboxLabel} 中找到验证码：${fetchResult.code}`, 'ok');
         return {
           ok: true,
           code: fetchResult.code,
@@ -5339,11 +5340,11 @@ async function pollHotmailVerificationCodeViaLocalHelper(step, account, pollPayl
         };
       }
 
-      lastError = new Error(`步骤 ${step}：本地助手暂未返回匹配验证码（${attempt}/${maxAttempts}）。`);
+      lastError = new Error(`步骤 ${logStep}：本地助手暂未返回匹配验证码（${attempt}/${maxAttempts}）。`);
       await addLog(lastError.message, attempt === maxAttempts ? 'warn' : 'info');
     } catch (err) {
       lastError = err;
-      await addLog(`步骤 ${step}：本地助手轮询 Hotmail 失败：${err.message}`, 'warn');
+      await addLog(`步骤 ${logStep}：本地助手轮询 Hotmail 失败：${err.message}`, 'warn');
     }
 
     if (attempt < maxAttempts) {
@@ -5351,7 +5352,7 @@ async function pollHotmailVerificationCodeViaLocalHelper(step, account, pollPayl
     }
   }
 
-  throw lastError || new Error(`步骤 ${step}：本地助手未返回新的匹配验证码。`);
+  throw lastError || new Error(`步骤 ${logStep}：本地助手未返回新的匹配验证码。`);
 }
 
 async function fetchHotmailMailboxMessages(account, mailboxes = HOTMAIL_MAILBOXES) {
@@ -5495,14 +5496,15 @@ async function testHotmailAccountMailAccess(accountId) {
 }
 
 async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
-  await addLog(`步骤 ${step}：正在确定 Hotmail 收信账号...`, 'info');
+  const logStep = Math.floor(Number(pollPayload.logStep) || 0) || step;
+  await addLog(`步骤 ${logStep}：正在确定 Hotmail 收信账号...`, 'info');
   let account = await ensureHotmailAccountForFlow({
     allowAllocate: true,
     markUsed: false,
     preferredAccountId: state.currentHotmailAccountId || null,
     allowUsedCurrent: true,
   });
-  await addLog(`步骤 ${step}：当前使用 Hotmail 账号 ${account.email} 轮询收件箱。`, 'info');
+  await addLog(`步骤 ${logStep}：当前使用 Hotmail 账号 ${account.email} 轮询收件箱。`, 'info');
 
   const serviceSettings = getHotmailServiceSettings(state);
   if (serviceSettings.mode === HOTMAIL_SERVICE_MODE_LOCAL) {
@@ -5535,7 +5537,7 @@ async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     throwIfStopped();
     try {
-      await addLog(`步骤 ${step}：正在通过 API对接 轮询 Hotmail 邮件（${attempt}/${maxAttempts}）...`, 'info');
+      await addLog(`步骤 ${logStep}：正在通过 API对接 轮询 Hotmail 邮件（${attempt}/${maxAttempts}）...`, 'info');
       const fetchResult = await fetchHotmailMailboxMessages(account, HOTMAIL_MAILBOXES);
       account = fetchResult.account;
       const matchResult = pickVerificationMessageWithTimeFallback(fetchResult.messages, {
@@ -5552,9 +5554,9 @@ async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
         const mailboxLabel = match.message?.mailbox || 'INBOX';
         if (matchResult.usedRelaxedFilters) {
           const fallbackLabel = matchResult.usedTimeFallback ? '宽松匹配 + 时间回退' : '宽松匹配';
-          await addLog(`步骤 ${step}：严格规则未命中，已改用 ${fallbackLabel} 并命中 Hotmail ${mailboxLabel} 验证码。`, 'warn');
+          await addLog(`步骤 ${logStep}：严格规则未命中，已改用 ${fallbackLabel} 并命中 Hotmail ${mailboxLabel} 验证码。`, 'warn');
         }
-        await addLog(`步骤 ${step}：已通过 API对接 在 Hotmail ${mailboxLabel} 中找到验证码：${match.code}`, 'ok');
+        await addLog(`步骤 ${logStep}：已通过 API对接 在 Hotmail ${mailboxLabel} 中找到验证码：${match.code}`, 'ok');
         return {
           ok: true,
           code: match.code,
@@ -5563,15 +5565,15 @@ async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
         };
       }
 
-      lastError = new Error(`步骤 ${step}：暂未在 Hotmail 收件箱中找到匹配验证码（${attempt}/${maxAttempts}）。`);
+      lastError = new Error(`步骤 ${logStep}：暂未在 Hotmail 收件箱中找到匹配验证码（${attempt}/${maxAttempts}）。`);
       await addLog(lastError.message, attempt === maxAttempts ? 'warn' : 'info');
       const mailSummary = summarizeMessagesForLog(fetchResult.messages);
       if (mailSummary) {
-        await addLog(`步骤 ${step}：最近邮件样本：${mailSummary}`, 'info');
+        await addLog(`步骤 ${logStep}：最近邮件样本：${mailSummary}`, 'info');
       }
     } catch (err) {
       lastError = err;
-      await addLog(`步骤 ${step}：Hotmail API 对接轮询失败：${err.message}`, 'warn');
+      await addLog(`步骤 ${logStep}：Hotmail API 对接轮询失败：${err.message}`, 'warn');
     }
 
     if (attempt < maxAttempts) {
@@ -5579,7 +5581,7 @@ async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
     }
   }
 
-  throw lastError || new Error(`步骤 ${step}：未在 Hotmail 收件箱中找到新的匹配验证码。`);
+  throw lastError || new Error(`步骤 ${logStep}：未在 Hotmail 收件箱中找到新的匹配验证码。`);
 }
 
 function generateRandomSuffix(length = 6) {

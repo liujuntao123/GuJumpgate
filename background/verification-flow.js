@@ -67,6 +67,10 @@
       return rawAddLog(normalizeVerificationLogMessage(message), level, normalizedOptions);
     }
 
+    function buildStepMessage(step, message) {
+      return `步骤 ${step}：${normalizeVerificationLogMessage(message)}`;
+    }
+
     async function getNodeIdForStep(step) {
       const state = typeof getState === 'function' ? await getState() : {};
       return typeof getNodeIdByStepForState === 'function'
@@ -247,6 +251,8 @@
                 responseTimeoutMs: requestTimeoutMs,
                 retryDelayMs: 400,
                 logMessage: `步骤 ${step}：验证码提交后页面正在切换，等待页面恢复并确认授权状态...`,
+                logStep: step,
+                logStepKey: 'fetch-login-code',
               }
             )
             : await sendToContentScript('signup-page', request, {
@@ -317,6 +323,39 @@
         success: false,
         reason: 'unknown',
         snapshot: lastSnapshot,
+      };
+    }
+
+    async function waitForStep8PostSubmitSuccess(options = {}) {
+      const completionStep = getCompletionStep(8, options);
+      const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 45000);
+      const pollIntervalMs = Math.max(100, Number(options.pollIntervalMs) || 500);
+      const startedAt = Date.now();
+      let lastFallback = null;
+
+      while (Date.now() - startedAt < timeoutMs) {
+        throwIfStopped();
+        const fallback = await detectStep8PostSubmitFallback({
+          step: completionStep,
+          timeoutMs: Math.min(3500, Math.max(1000, timeoutMs - (Date.now() - startedAt))),
+          pollIntervalMs,
+        });
+        lastFallback = fallback;
+
+        if (fallback?.invalidCode || fallback?.restartStep7) {
+          return fallback;
+        }
+        if (fallback?.success) {
+          return fallback;
+        }
+
+        await sleepWithStop(pollIntervalMs);
+      }
+
+      return {
+        success: false,
+        reason: 'unknown',
+        snapshot: lastFallback?.snapshot || null,
       };
     }
 
@@ -972,6 +1011,7 @@
           ...getVerificationPollPayload(step, state),
           ...hotmailPollConfig,
           ...cleanPollOverrides,
+          logStep: cleanPollOverrides.logStep || activeVerificationLogStep || step,
         }, cleanPollOverrides, `轮询${getVerificationCodeLabel(step)}验证码邮箱`);
         return pollHotmailVerificationCode(step, state, timedPoll.payload);
       }
@@ -979,6 +1019,7 @@
         const timedPoll = await applyMailPollingTimeBudget(step, {
           ...getVerificationPollPayload(step, state),
           ...cleanPollOverrides,
+          logStep: cleanPollOverrides.logStep || activeVerificationLogStep || step,
         }, cleanPollOverrides, `轮询${getVerificationCodeLabel(step)}验证码邮箱`);
         return pollLuckmailVerificationCodeWithResend(step, state, {
           ...cleanPollOverrides,
@@ -990,6 +1031,7 @@
         const timedPoll = await applyMailPollingTimeBudget(step, {
           ...getVerificationPollPayload(step, state),
           ...cleanPollOverrides,
+          logStep: cleanPollOverrides.logStep || activeVerificationLogStep || step,
         }, cleanPollOverrides, `轮询${getVerificationCodeLabel(step)}验证码邮箱`);
         return pollCloudflareTempEmailVerificationCode(step, state, timedPoll.payload);
       }
@@ -997,6 +1039,7 @@
         const timedPoll = await applyMailPollingTimeBudget(step, {
           ...getVerificationPollPayload(step, state),
           ...cleanPollOverrides,
+          logStep: cleanPollOverrides.logStep || activeVerificationLogStep || step,
         }, cleanPollOverrides, `轮询${getVerificationCodeLabel(step)}验证码邮箱`);
         return pollCloudMailVerificationCode(step, state, timedPoll.payload);
       }
@@ -1278,6 +1321,37 @@
         throw new Error(result.error);
       }
 
+      if (step === 8 && result && !result.invalidCode && !result.addPhonePage && !result.alreadyAdvanced) {
+        const fallback = await waitForStep8PostSubmitSuccess({
+          ...options,
+          timeoutMs: options.postSubmitWaitTimeoutMs,
+        });
+        if (fallback.invalidCode) {
+          return {
+            invalidCode: true,
+            errorText: fallback.errorText || '验证码被拒绝。',
+            url: fallback.url || '',
+          };
+        }
+        if (fallback.restartStep7) {
+          const urlPart = fallback.url ? ` URL: ${fallback.url}` : '';
+          throw new Error(`STEP8_RESTART_STEP7::步骤 ${completionStep}：验证码提交后认证页进入登录超时报错页，请回到步骤 ${authLoginStep} 重新开始。${urlPart}`.trim());
+        }
+        if (!fallback.success) {
+          const snapshot = fallback.snapshot || {};
+          const statePart = snapshot.state ? `当前状态：${snapshot.state}。` : '';
+          const urlPart = snapshot.url ? ` URL: ${snapshot.url}` : '';
+          throw new Error(`步骤 ${completionStep}：验证码已提交，但未确认进入 ChatGPT 登录态或后续认证页。${statePart}${urlPart}`.trim());
+        }
+        result = {
+          ...result,
+          addPhonePage: Boolean(fallback.addPhonePage),
+          postSubmitConfirmed: true,
+          postSubmitReason: fallback.reason || '',
+          url: fallback.url || result.url || '',
+        };
+      }
+
       return result || {};
     }
 
@@ -1377,6 +1451,7 @@
             pollAttemptPlan: mail.provider === '2925' && rejectedCodes.size > 0
               ? undefined
               : options.pollAttemptPlan,
+            logStep: completionStep,
             resendIntervalMs,
             lastResendAt,
             onResendRequestedAt: updateFilterAfterTimestampForVerificationStep,
@@ -1392,7 +1467,7 @@
           );
 
           throwIfStopped();
-          await addLog(`步骤 ${step}：已获取${getVerificationCodeLabel(step)}验证码：${result.code}`);
+          await addLog(buildStepMessage(completionStep, `已获取${getVerificationCodeLabel(step)}验证码：${result.code}`));
           if (beforeSubmit) {
             await beforeSubmit(result, {
               attempt,
@@ -1406,27 +1481,27 @@
 
           if (submitResult.invalidCode) {
             rejectedCodes.add(result.code);
-            await addLog(`步骤 ${step}：验证码被页面拒绝：${submitResult.errorText || result.code}`, 'warn');
+            await addLog(buildStepMessage(completionStep, `验证码被页面拒绝：${submitResult.errorText || result.code}`), 'warn');
 
             if (attempt >= maxSubmitAttempts) {
-              throw new Error(`步骤 ${step}：验证码连续失败，已达到 ${maxSubmitAttempts} 次重试上限。`);
+              throw new Error(`步骤 ${completionStep}：验证码连续失败，已达到 ${maxSubmitAttempts} 次重试上限。`);
             }
 
             if (mail.provider === LUCKMAIL_PROVIDER) {
-              await addLog(`步骤 ${step}：LuckMail 验证码提交失败，等待 15 秒后重新轮询 /code 接口（${attempt + 1}/${maxSubmitAttempts}）...`, 'warn');
+              await addLog(buildStepMessage(completionStep, `LuckMail 验证码提交失败，等待 15 秒后重新轮询 /code 接口（${attempt + 1}/${maxSubmitAttempts}）...`), 'warn');
               await sleepWithStop(15000);
               continue;
             }
 
             if (remainingAutomaticResendCount <= 0) {
-              await addLog(`步骤 ${step}：已达到自动重新发送验证码次数上限，将排除已拒绝验证码并继续轮询新邮件。`, 'warn');
+              await addLog(buildStepMessage(completionStep, '已达到自动重新发送验证码次数上限，将排除已拒绝验证码并继续轮询新邮件。'), 'warn');
               continue;
             }
 
             lastResendAt = await requestVerificationCodeResend(step, options);
             remainingAutomaticResendCount -= 1;
             await updateFilterAfterTimestampForVerificationStep(lastResendAt);
-            await addLog(`步骤 ${step}：提交失败后已请求新验证码（${attempt + 1}/${maxSubmitAttempts}）...`, 'warn');
+            await addLog(buildStepMessage(completionStep, `提交失败后已请求新验证码（${attempt + 1}/${maxSubmitAttempts}）...`), 'warn');
             continue;
           }
 
