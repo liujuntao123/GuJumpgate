@@ -11,6 +11,7 @@
       CLOUD_MAIL_PROVIDER = 'cloudmail',
       completeNodeFromBackground,
       confirmCustomVerificationStepBypass,
+      ensureContentScriptReadyOnTab,
       ensureMail2925MailboxSession,
       ensureIcloudMailSession,
       ensureStep8VerificationPageReady,
@@ -23,6 +24,7 @@
       isTabAlive,
       isVerificationMailPollingError,
       LUCKMAIL_PROVIDER,
+      registerTab,
       resolveSignupEmailForFlow,
       resolveVerificationStep,
       rerunStep7ForStep8Recovery,
@@ -33,6 +35,7 @@
       setState,
       shouldUseCustomRegistrationEmail,
       sleepWithStop,
+      SIGNUP_PAGE_INJECT_FILES = [],
       STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS,
       STEP7_MAIL_POLLING_RECOVERY_MAX_ATTEMPTS,
       throwIfStopped,
@@ -123,6 +126,72 @@
 
     function normalizeStep8VerificationTargetEmail(value) {
       return String(value || '').trim().toLowerCase();
+    }
+
+    function parseStep8Url(rawUrl = '') {
+      try {
+        return new URL(String(rawUrl || ''));
+      } catch {
+        return null;
+      }
+    }
+
+    function isLoginEmailVerificationUrl(rawUrl = '') {
+      const parsed = parseStep8Url(rawUrl);
+      if (!parsed) return false;
+      const host = String(parsed.hostname || '').toLowerCase();
+      return ['auth.openai.com', 'auth0.openai.com', 'accounts.openai.com'].includes(host)
+        && /\/email-verification(?:[/?#]|$)/i.test(String(parsed.pathname || ''));
+    }
+
+    async function attachLoginVerificationTab(tabId, visibleStep) {
+      if (!Number.isInteger(tabId)) {
+        return;
+      }
+      if (typeof registerTab === 'function') {
+        await registerTab('signup-page', tabId);
+      }
+      if (typeof ensureContentScriptReadyOnTab === 'function' && Array.isArray(SIGNUP_PAGE_INJECT_FILES) && SIGNUP_PAGE_INJECT_FILES.length) {
+        await ensureContentScriptReadyOnTab('signup-page', tabId, {
+          inject: SIGNUP_PAGE_INJECT_FILES,
+          injectSource: 'signup-page',
+          timeoutMs: 20000,
+          retryDelayMs: 700,
+          logMessage: `步骤 ${visibleStep}：登录验证码页已打开，正在等待脚本就绪...`,
+          logStep: visibleStep,
+          logStepKey: activeFetchLoginCodeStepKey || 'fetch-login-code',
+        });
+      }
+    }
+
+    async function recoverExistingLoginVerificationPage(visibleStep, options = {}) {
+      if (!chrome?.tabs?.query) {
+        return null;
+      }
+      const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 8000, 30000));
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        throwIfStopped();
+        const tabs = await chrome.tabs.query({}).catch(() => []);
+        const verificationTab = (tabs || [])
+          .filter((tab) => Number.isInteger(tab?.id))
+          .find((tab) => isLoginEmailVerificationUrl(tab?.url));
+        if (verificationTab) {
+          await attachLoginVerificationTab(verificationTab.id, visibleStep);
+          await addLog(
+            `步骤 ${visibleStep}：已检测到现有登录验证码页（${verificationTab.url}），直接使用该页面继续获取验证码。`,
+            'ok',
+            { step: visibleStep, stepKey: activeFetchLoginCodeStepKey || 'fetch-login-code' }
+          );
+          return {
+            state: 'verification_page',
+            url: String(verificationTab.url || ''),
+            displayedEmail: '',
+          };
+        }
+        await sleepWithStop(300);
+      }
+      return null;
     }
 
     function resolveBoundEmailLoginTarget(state = {}, visibleStep = 0) {
@@ -775,13 +844,25 @@
       }
 
       throwIfStopped();
-      let pageState = await ensureStep8VerificationPageReady({
-        visibleStep,
-        authLoginStep: getAuthLoginStepForVisibleStep(visibleStep),
-        allowPhoneVerificationPage: true,
-        allowAddEmailPage: true,
-        timeoutMs: await getStep8ReadyTimeoutMs('确认登录验证码页已就绪', state?.oauthUrl || '', visibleStep),
-      });
+      let pageState = await recoverExistingLoginVerificationPage(visibleStep, { timeoutMs: 2500 });
+      if (!pageState) {
+        try {
+          pageState = await ensureStep8VerificationPageReady({
+            visibleStep,
+            authLoginStep: getAuthLoginStepForVisibleStep(visibleStep),
+            allowPhoneVerificationPage: true,
+            allowAddEmailPage: true,
+            timeoutMs: await getStep8ReadyTimeoutMs('确认登录验证码页已就绪', state?.oauthUrl || '', visibleStep),
+          });
+        } catch (error) {
+          const recoveredPageState = await recoverExistingLoginVerificationPage(visibleStep, { timeoutMs: 12000 });
+          if (recoveredPageState) {
+            pageState = recoveredPageState;
+          } else {
+            throw error;
+          }
+        }
+      }
       if (pageState?.state === 'oauth_consent_page') {
         await completeStep8WhenAuthAlreadyOnOauthConsent(visibleStep, { nodeId: state?.nodeId });
         return;
